@@ -1,0 +1,19 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run FastAPI server",
+			"type": "shell",
+			"command": "/Users/alice/Documents/COS30082/Project/facial-recognization-be/.venv/bin/python",
+			"args": [
+				"-m",
+				"uvicorn",
+				"api.main:app",
+				"--reload"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}
