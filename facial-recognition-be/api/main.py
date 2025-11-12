@@ -1,259 +1,189 @@
 import uvicorn
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from deepface import DeepFace
 import tensorflow as tf
 import numpy as np
 from PIL import Image
-import io
-import os
-import time
+import io, os, time, cv2
+
+# --- Optional liveness import ---
+try:
+    from silent_face_anti_spoofing.src.anti_spoof_predict import AntiSpoofPredict
+except Exception:
+    AntiSpoofPredict = None
 
 # --- Configuration ---
-app = FastAPI(
-    title="Facial Recognition Attendance System",
-    description="API for face verification, liveness, and emotion detection."
+app = FastAPI(title="Facial Recognition Attendance System",
+              description="API for face verification, liveness, and emotion detection.")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-# --- Load Models (Global) ---
-# We load models at startup to avoid reloading on every request.
-# NOTE: You must provide these files in your backend environment.
+PARENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-EMBEDDING_MODEL_PATH = "face_embedding_model.keras"
-LIVENESS_MODEL_PATH = "liveness_model.h5"  # <-- YOU MUST PROVIDE THIS MODEL
+# --- Locate embedding model ---
+EMBEDDING_MODEL_NAMES = ['face_metric_embedder_batch_hard.keras', 'face_embedding_model.keras']
+EMBEDDING_MODEL_PATH = next((os.path.join(PARENT_DIR, n)
+                             for n in EMBEDDING_MODEL_NAMES
+                             if os.path.exists(os.path.join(PARENT_DIR, n))), None)
 
-# Embedding Model (from your Kaggle training)
-try:
-    EMBEDDING_MODEL = tf.keras.models.load_model(EMBEDDING_MODEL_PATH)
-    print(f"Successfully loaded embedding model from {EMBEDDING_MODEL_PATH}")
-except Exception as e:
-    print(f"CRITICAL: Could not load embedding model. Error: {e}")
-    # In a real app, you might want to exit or disable endpoints.
-    EMBEDDING_MODEL = None
-
-# Liveness Model (Pre-trained)
-# You need to find and download a pre-trained liveness model.
-# This is a placeholder for its loading.
-try:
-    # LIVENESS_MODEL = tf.keras.models.load_model(LIVENESS_MODEL_PATH)
-    LIVENESS_MODEL = None  # Placeholder
-    if LIVENESS_MODEL:
-        print(f"Successfully loaded liveness model from {LIVENESS_MODEL_PATH}")
-    else:
-        print(f"WARNING: Liveness model not loaded. Liveness check will be skipped.")
-except Exception as e:
-    print(f"WARNING: Could not load liveness model. Liveness check will be skipped. Error: {e}")
-    LIVENESS_MODEL = None
-
-# --- Mock Database ---
-# In a real system, use FAISS, Pinecone, or a SQL DB with vector support.
-# This is a simple in-memory dictionary for demonstration.
-# { "employee_id": np.array([...]) }
-FACE_DATABASE = {}
-VERIFICATION_THRESHOLD = 0.7  # Cosine similarity threshold. Tune this!
-
-# --- Helper Functions ---
-
-def load_image_into_numpy_array(data):
-    """Loads image from bytes into a numpy array."""
+EMBEDDING_MODEL = None
+if EMBEDDING_MODEL_PATH:
     try:
-        image = Image.open(io.BytesIO(data))
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        return np.array(image)
+        EMBEDDING_MODEL = tf.keras.models.load_model(EMBEDDING_MODEL_PATH)
+        print(f"✅ Loaded embedding model: {EMBEDDING_MODEL_PATH}")
     except Exception as e:
-        print(f"Error loading image: {e}")
+        print(f"❌ Failed to load embedding model: {e}")
+else:
+    print(f"❌ No embedding model found in {PARENT_DIR}")
+
+# --- Load liveness model if available ---
+LIVENESS_MODEL = None
+if AntiSpoofPredict is not None:
+    try:
+        LIVENESS_MODEL = AntiSpoofPredict(device_id=0)
+        print("✅ Liveness model loaded.")
+    except Exception as e:
+        print(f"⚠️ Liveness model not available: {e}")
+
+# --- Mock DB ---
+FACE_DATABASE = {}
+VERIFICATION_THRESHOLD = 0.7
+
+# --- Helpers ---
+def load_image_into_numpy_array(data):
+    try:
+        img = Image.open(io.BytesIO(data))
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        return np.array(img)
+    except Exception as e:
+        print(f"Image load error: {e}")
         return None
 
 def preprocess_for_embedding(face_img_array):
-    """Prepares a face crop for the embedding model."""
     img = tf.image.resize(face_img_array, [224, 224])
     img = tf.expand_dims(img, axis=0)
     img = tf.keras.applications.efficientnet.preprocess_input(img)
     return img
 
-def preprocess_for_liveness(face_img_array):
-    """Prepares a face crop for the liveness model."""
-    # This will DEPEND on the liveness model you use.
-    # A common requirement is resizing to 128x128 and scaling to /255.0
-    img = tf.image.resize(face_img_array, [128, 128])
-    img = tf.expand_dims(img, axis=0)
-    img = img / 255.0
-    return img
-
 def cosine_similarity(emb1, emb2):
-    """Calculates cosine similarity."""
     emb1_norm = emb1 / np.linalg.norm(emb1)
     emb2_norm = emb2 / np.linalg.norm(emb2)
     return np.dot(emb1_norm, emb2_norm)
 
-# --- API Endpoints ---
+def check_liveness(face_img_array):
+    """Return True (live), False (spoof), or None (error/unavailable)."""
+    try:
+        if LIVENESS_MODEL is None:
+            return None
+        bgr = cv2.cvtColor(face_img_array, cv2.COLOR_RGB2BGR)
+        pred = LIVENESS_MODEL.predict(bgr)
+        return bool(pred == 1)
+    except Exception as e:
+        print(f"Liveness check failed: {e}")
+        return None
 
+# --- Routes ---
 @app.get("/")
-def read_root():
-    return {"status": "Facial Recognition API is running."}
-
+def root():
+    return {
+        "status": "running",
+        "embedding_model": bool(EMBEDDING_MODEL),
+        "liveness_model": LIVENESS_MODEL is not None,
+        "registered_ids": list(FACE_DATABASE.keys())
+    }
 
 @app.post("/register_employee")
 async def register_employee(employee_id: str, file: UploadFile = File(...)):
-    """
-    Registers a new employee.
-    1. Validates liveness.
-    2. Detects face.
-    3. Generates and saves embedding.
-    """
     if not EMBEDDING_MODEL:
-        raise HTTPException(status_code=500, detail="Embedding model is not loaded.")
+        raise HTTPException(500, "Embedding model not loaded.")
     if employee_id in FACE_DATABASE:
-        raise HTTPException(status_code=400, detail="Employee ID already exists.")
+        raise HTTPException(400, "Employee already exists.")
 
     contents = await file.read()
-    image_array = load_image_into_numpy_array(contents)
-    if image_array is None:
-        raise HTTPException(status_code=400, detail="Invalid image file.")
+    image = load_image_into_numpy_array(contents)
+    if image is None:
+        raise HTTPException(400, "Invalid image.")
 
-    # --- 1. Face Detection ---
     try:
-        # We use DeepFace's detector. 'mtcnn' is robust.
-        face_obj = DeepFace.extract_faces(
-            image_array,
-            detector_backend='mtcnn',
-            enforce_detection=True
-        )
-        if not face_obj or len(face_obj) == 0:
-            raise Exception("No face detected.")
-        
-        # Get the first face
-        face_img = face_obj[0]['face'] * 255.0 # DeepFace returns 0-1 range
-        face_img = face_img.astype('uint8')
-        
+        face_obj = DeepFace.extract_faces(image, detector_backend='mtcnn', enforce_detection=True)
+        face = (face_obj[0]['face'] * 255).astype('uint8')
     except Exception as e:
-        return HTTPException(status_code=400, detail=f"Face detection failed: {str(e)}")
+        raise HTTPException(400, f"Face detection failed: {e}")
 
-    # --- 2. Liveness Check ---
-    if LIVENESS_MODEL:
-        liveness_input = preprocess_for_liveness(face_img)
-        liveness_score = LIVENESS_MODEL.predict(liveness_input)[0][0] # Assuming sigmoid output
-        
-        # This threshold depends on your model
-        LIVENESS_THRESHOLD = 0.9
-        if liveness_score < LIVENESS_THRESHOLD:
-             raise HTTPException(status_code=403, detail=f"Liveness check failed. Score: {liveness_score:.2f}. Possible spoof attempt.")
-        liveness_status = "real"
-    else:
-        liveness_status = "skipped"
+    # --- Liveness ---
+    live = check_liveness(face)
+    if live is False:
+        raise HTTPException(403, "Spoof detected. Registration denied.")
 
-
-    # --- 3. Generate Embedding ---
-    embedding_input = preprocess_for_embedding(face_img)
-    embedding = EMBEDDING_MODEL.predict(embedding_input, verbose=0)[0]
-
-    # --- 4. Save to Database ---
-    FACE_DATABASE[employee_id] = embedding
-    print(f"Successfully registered {employee_id}.")
-
-    return JSONResponse(content={
-        "status": "success",
-        "employee_id": employee_id,
-        "liveness_check": liveness_status,
-        "message": "Employee registered successfully."
-    })
-
+    emb = EMBEDDING_MODEL.predict(preprocess_for_embedding(face), verbose=0)[0]
+    FACE_DATABASE[employee_id] = emb
+    return {"status": "success", "employee_id": employee_id, "liveness": live}
 
 @app.post("/check_in")
 async def check_in(file: UploadFile = File(...)):
-    """
-    Performs the full attendance check-in.
-    1. Checks liveness.
-    2. Detects face.
-    3. Detects emotion.
-    4. Generates embedding and finds match.
-    """
     if not EMBEDDING_MODEL:
-        raise HTTPException(status_code=500, detail="Embedding model is not loaded.")
+        raise HTTPException(500, "Embedding model not loaded.")
     if not FACE_DATABASE:
-        raise HTTPException(status_code=503, detail="No employees registered in the database.")
+        raise HTTPException(503, "No registered employees.")
 
     contents = await file.read()
-    image_array = load_image_into_numpy_array(contents)
-    if image_array is None:
-        raise HTTPException(status_code=400, detail="Invalid image file.")
+    image = load_image_into_numpy_array(contents)
+    if image is None:
+        raise HTTPException(400, "Invalid image.")
 
-    start_time = time.time()
-    
-    # --- 1. Face Detection ---
+    start = time.time()
     try:
-        face_obj = DeepFace.extract_faces(
-            image_array,
-            detector_backend='mtcnn',
-            enforce_detection=True
-        )
-        if not face_obj or len(face_obj) == 0:
-            raise Exception("No face detected.")
-        
-        face_img = face_obj[0]['face'] * 255.0
-        face_img = face_img.astype('uint8')
+        face_obj = DeepFace.extract_faces(image, detector_backend='mtcnn', enforce_detection=True)
+        face = (face_obj[0]['face'] * 255).astype('uint8')
         face_region = face_obj[0]['facial_area']
-        
     except Exception as e:
-        return HTTPException(status_code=400, detail=f"Face detection failed: {str(e)}")
-        
-    # --- 2. Liveness Check ---
-    if LIVENESS_MODEL:
-        liveness_input = preprocess_for_liveness(face_img)
-        liveness_score = LIVENESS_MODEL.predict(liveness_input)[0][0]
-        LIVENESS_THRESHOLD = 0.9
-        if liveness_score < LIVENESS_THRESHOLD:
-             raise HTTPException(status_code=403, detail=f"Liveness check failed. Score: {liveness_score:.2f}. Possible spoof attempt.")
-        liveness_status = "real"
-    else:
-        liveness_status = "skipped"
+        raise HTTPException(400, f"Face detection failed: {e}")
 
-    # --- 3. Emotion Detection ---
-    # We run this in parallel (in theory). Here, sequentially.
+    # --- Liveness ---
+    live = check_liveness(face)
+    liveness_status = "live" if live else "spoof" if live is False else "unknown"
+    if live is False:
+        return {"status": "error", "liveness": liveness_status, "message": "Spoof detected."}
+
+    # --- Emotion ---
     try:
-        emotion_result = DeepFace.analyze(
-            image_array,
-            actions=['emotion'],
-            enforce_detection=False, # We already detected it
-            detector_backend='skip'
-        )
-        detected_emotion = emotion_result[0]['dominant_emotion']
+        emotion = DeepFace.analyze(image, actions=['emotion'],
+                                   enforce_detection=False, detector_backend='skip')[0]['dominant_emotion']
     except Exception as e:
         print(f"Emotion detection failed: {e}")
-        detected_emotion = "unknown"
+        emotion = "unknown"
 
-    # --- 4. Verification ---
-    embedding_input = preprocess_for_embedding(face_img)
-    unknown_embedding = EMBEDDING_MODEL.predict(embedding_input, verbose=0)[0]
+    # --- Verification ---
+    emb = EMBEDDING_MODEL.predict(preprocess_for_embedding(face), verbose=0)[0]
+    best_id, best_score = "Unknown", 0.0
+    for emp_id, known in FACE_DATABASE.items():
+        sim = cosine_similarity(emb, known)
+        if sim > best_score:
+            best_score = sim
+            if sim >= VERIFICATION_THRESHOLD:
+                best_id = emp_id
 
-    best_match_id = "Unknown"
-    best_match_score = 0.0
-
-    for employee_id, known_embedding in FACE_DATABASE.items():
-        similarity = cosine_similarity(unknown_embedding, known_embedding)
-        
-        if similarity > best_match_score:
-            best_match_score = similarity
-            if similarity >= VERIFICATION_THRESHOLD:
-                best_match_id = employee_id
-
-    end_time = time.time()
-
-    return JSONResponse(content={
+    end = time.time()
+    return {
         "status": "success",
-        "liveness_check": liveness_status,
-        "emotion": detected_emotion,
+        "liveness": liveness_status,
+        "emotion": emotion,
         "match_result": {
-            "employee_id": best_match_id,
-            "confidence_score": float(best_match_score),
-            "is_verified": best_match_id != "Unknown"
+            "employee_id": best_id,
+            "confidence_score": float(best_score),
+            "is_verified": best_id != "Unknown"
         },
         "face_region": face_region,
-        "processing_time_seconds": round(end_time - start_time, 2)
-    })
+        "processing_time_seconds": round(end - start, 2)
+    }
 
 if __name__ == "__main__":
-    print("Starting FastAPI server...")
-    print("Access the API docs at http://127.0.0.1:8000/docs")
+    print(f"Looking for models in {PARENT_DIR}")
     uvicorn.run(app, host="127.0.0.1", port=8000)
