@@ -1,5 +1,5 @@
 # Core ML Libraries - A known stable combination for macOS
-tensorflow==2.15.0
+tensorflow==2.18.0
 numpy==1.26.4
 
 # DeepFace and its critical dependency (pinned to a version compatible with numpy 1.x)
@@ -12,4 +12,11 @@ uvicorn[standard]==0.30.3
 python-dotenv==1.0.1
 Pillow==10.4.0
 python-multipart==0.0.9
-tf_keras==2.15.0
+keras==3.8.0
+
+# Anti-spoofing dependencies
+torch==1.10.0
+torchvision==0.11.1
+easydict==1.9
+tqdm==4.62.3
+tensorboardX==2.4.1
