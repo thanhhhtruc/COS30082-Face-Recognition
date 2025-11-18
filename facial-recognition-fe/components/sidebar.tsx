@@ -17,7 +17,6 @@ export default function Sidebar({ currentPage, onPageChange, isOpen, onToggle }:
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "register", label: "Register Face", icon: UserPlus },
     { id: "verify", label: "Verify Face", icon: CheckCircle },
-    { id: "logs", label: "Logs", icon: FileText },
   ]
 
   return (
@@ -34,7 +33,7 @@ export default function Sidebar({ currentPage, onPageChange, isOpen, onToggle }:
         } lg:translate-x-0`}
       >
         <div className="p-6 pt-8">
-          <h2 className="text-xs font-bold text-accent uppercase tracking-widest">Menu</h2>
+          <h2 className="text-xs font-bold text-primary uppercase tracking-widest">Menu</h2>
         </div>
 
         <nav className="space-y-2 px-4">

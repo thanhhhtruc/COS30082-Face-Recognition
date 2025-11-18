@@ -7,16 +7,16 @@ export default function LivenessIndicator({ status }: LivenessIndicatorProps) {
     switch (status) {
       case "real":
         return {
-          bg: "bg-green-50",
-          border: "border-green-200",
-          text: "text-green-700",
+          bg: "bg-success-subtle",
+          border: "border-success-muted",
+          text: "text-success-strong",
           label: "Real Face",
         }
       case "spoof":
         return {
-          bg: "bg-red-50",
-          border: "border-red-200",
-          text: "text-red-700",
+          bg: "bg-danger-subtle",
+          border: "border-danger-muted",
+          text: "text-danger-strong",
           label: "Spoof Detected",
         }
       default:
