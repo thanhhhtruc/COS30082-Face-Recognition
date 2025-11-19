@@ -191,7 +191,7 @@ def load_image_from_base64(base64_str: str) -> np.ndarray | None:
 
 def preprocess_for_embedding(face_img_array: np.ndarray) -> tf.Tensor:
     """Preprocesses a face image for the embedding model."""
-    img = tf.image.resize(face_img_array, [160, 160])
+    img = tf.image.resize(face_img_array, [260, 260])  # Updated to match model's input size
     img = tf.expand_dims(img, axis=0)
     img = tf.keras.applications.efficientnet.preprocess_input(img)
     return img

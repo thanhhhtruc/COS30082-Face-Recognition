@@ -27,7 +27,8 @@ except ImportError:
 
 # Define the target size expected by your Keras model
 # Standard size for many facial models is 160x160 or 224x224
-TARGET_SIZE = (160, 160) 
+# TARGET_SIZE = (160, 160) 
+TARGET_SIZE = (260, 260) 
 
 async def preprocess_image(file_content: bytes) -> np.ndarray:
     """Loads, resizes, and converts image bytes into a Keras-ready NumPy array."""
